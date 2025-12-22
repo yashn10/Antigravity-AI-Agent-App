@@ -104,7 +104,7 @@ When you need to clarify something with the user, ask ONE clear question at a ti
 // Bind tools to the LLM
 const llmWithTools = groqLLM.bindTools(travelTools);
 
-// Node: Analyze user request and determine next action
+// Node: Analyze user request and extract travel details using pattern matching
 async function analyzeRequest(state: TravelState): Promise<Partial<TravelState>> {
     const messages = state.messages;
     const lastMessage = messages[messages.length - 1];
@@ -113,30 +113,132 @@ async function analyzeRequest(state: TravelState): Promise<Partial<TravelState>>
         return {};
     }
 
-    const userMessage = String(lastMessage.content).toLowerCase();
+    const userInput = String(lastMessage.content);
+    const userInputLower = userInput.toLowerCase();
+    const existingDetails = state.travelDetails || {};
+    const details: TravelAgentState['travelDetails'] = { ...existingDetails };
 
-    // Extract travel details from the message
-    const details: TravelAgentState['travelDetails'] = { ...state.travelDetails };
-
-    // Simple extraction logic (the LLM will handle complex cases)
-    const dateRegex = /(\d{4}-\d{2}-\d{2})/g;
-    const dates = userMessage.match(dateRegex);
-    if (dates) {
-        if (!details.departureDate) details.departureDate = dates[0];
-        if (dates[1] && !details.returnDate) details.returnDate = dates[1];
+    // Extract origin/destination patterns - must have "from X to Y" structure
+    // Pattern: "from <city> to <city>"
+    const fromToMatch = userInput.match(/from\s+([a-zA-Z\s]+?)\s+to\s+([a-zA-Z\s]+?)(?:\s+(?:on|from|for|in|at|,)|$)/i);
+    if (fromToMatch) {
+        const origin = fromToMatch[1].trim();
+        const destination = fromToMatch[2].trim();
+        // Only use if they look like city names (not common words)
+        const invalidWords = ['i', 'want', 'fly', 'go', 'travel', 'the', 'a', 'an'];
+        if (!invalidWords.includes(origin.toLowerCase()) && !invalidWords.includes(destination.toLowerCase())) {
+            details.origin = origin;
+            details.destination = destination;
+        }
     }
 
-    const travelersMatch = userMessage.match(/(\d+)\s*(people|person|travelers?|adults?)/i);
+    // Try alternate pattern: "<city> to <city>"
+    if (!details.origin || !details.destination) {
+        const altMatch = userInput.match(/(?:fly|travel|go|trip)\s+(?:from\s+)?([a-zA-Z\s]+?)\s+to\s+([a-zA-Z\s]+?)(?:\s|$)/i);
+        if (altMatch) {
+            details.origin = altMatch[1].trim();
+            details.destination = altMatch[2].trim();
+        }
+    }
+
+    // Try to extract IATA codes (3-letter uppercase codes in parentheses or standalone)
+    const iataMatch = userInput.match(/\(([A-Z]{3})\)/g);
+    if (iataMatch && iataMatch.length >= 2) {
+        details.origin = iataMatch[0].replace(/[()]/g, '');
+        details.destination = iataMatch[1].replace(/[()]/g, '');
+    }
+
+    // Month names for date parsing
+    const months: Record<string, string> = {
+        'january': '01', 'february': '02', 'march': '03', 'april': '04',
+        'may': '05', 'june': '06', 'july': '07', 'august': '08',
+        'september': '09', 'october': '10', 'november': '11', 'december': '12',
+        'jan': '01', 'feb': '02', 'mar': '03', 'apr': '04',
+        'jun': '06', 'jul': '07', 'aug': '08', 'sep': '09', 'oct': '10', 'nov': '11', 'dec': '12'
+    };
+
+    // Extract dates in various formats
+    // YYYY-MM-DD format
+    const isoDateMatch = userInput.match(/(\d{4}-\d{2}-\d{2})/g);
+    if (isoDateMatch) {
+        if (!details.departureDate) details.departureDate = isoDateMatch[0];
+        if (isoDateMatch[1] && !details.returnDate) details.returnDate = isoDateMatch[1];
+    }
+
+    // DD Month YYYY format (e.g., "28 december 2025")
+    const dayMonthYearMatch = userInput.match(/(\d{1,2})\s+(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\s+(\d{4})/gi);
+    if (dayMonthYearMatch && !details.departureDate) {
+        const dateStr = dayMonthYearMatch[0];
+        const parts = dateStr.match(/(\d{1,2})\s+([a-zA-Z]+)\s+(\d{4})/i);
+        if (parts) {
+            const day = parts[1].padStart(2, '0');
+            const month = months[parts[2].toLowerCase()];
+            const year = parts[3];
+            if (month) {
+                details.departureDate = `${year}-${month}-${day}`;
+            }
+        }
+    }
+
+    // Month DD, YYYY or Month DD-DD, YYYY format
+    const monthDateMatch = userInput.match(/(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:\s*[-–]\s*(\d{1,2}))?,?\s*(\d{4})/gi);
+    if (monthDateMatch && !details.departureDate) {
+        const dateStr = monthDateMatch[0];
+        const parts = dateStr.match(/(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:\s*[-–]\s*(\d{1,2}))?,?\s*(\d{4})/i);
+        if (parts) {
+            const month = months[parts[1].toLowerCase()];
+            const day = parts[2].padStart(2, '0');
+            const endDay = parts[3] ? parts[3].padStart(2, '0') : null;
+            const year = parts[4];
+            if (!details.departureDate) details.departureDate = `${year}-${month}-${day}`;
+            if (endDay && !details.returnDate) details.returnDate = `${year}-${month}-${endDay}`;
+        }
+    }
+
+    // Extract number of travelers
+    const travelersMatch = userInput.match(/(\d+)\s*(?:people|person|travelers?|adults?|passengers?)/i);
     if (travelersMatch) {
         details.travelers = parseInt(travelersMatch[1]);
     }
+
+    // Also check for "for X" pattern
+    const forPeopleMatch = userInput.match(/for\s+(\d+)(?:\s+people)?/i);
+    if (forPeopleMatch && !details.travelers) {
+        details.travelers = parseInt(forPeopleMatch[1]);
+    }
+
+    // Common city name to IATA code mappings
+    const cityToIata: Record<string, string> = {
+        'new york': 'NYC', 'nyc': 'NYC', 'jfk': 'JFK', 'la guardia': 'LGA',
+        'los angeles': 'LAX', 'la': 'LAX', 'lax': 'LAX',
+        'paris': 'CDG', 'london': 'LHR', 'tokyo': 'NRT', 'dubai': 'DXB',
+        'singapore': 'SIN', 'hong kong': 'HKG', 'sydney': 'SYD',
+        'san francisco': 'SFO', 'chicago': 'ORD', 'miami': 'MIA',
+        'delhi': 'DEL', 'mumbai': 'BOM', 'bangalore': 'BLR',
+    };
+
+    // Try to convert city names to IATA codes
+    if (details.origin) {
+        const originLower = details.origin.toLowerCase();
+        if (cityToIata[originLower]) {
+            details.origin = cityToIata[originLower];
+        }
+    }
+    if (details.destination) {
+        const destLower = details.destination.toLowerCase();
+        if (cityToIata[destLower]) {
+            details.destination = cityToIata[destLower];
+        }
+    }
+
+    console.log('Extracted travel details:', details);
 
     return {
         travelDetails: details,
         reasoningSteps: [{
             step: 1,
             title: 'Analyzing Request',
-            description: 'Understanding your travel requirements',
+            description: `Extracted: ${details.origin || '?'} → ${details.destination || '?'}, ${details.departureDate || 'dates TBD'}`,
             status: 'completed' as const,
         }],
     };
@@ -311,12 +413,16 @@ export function createTravelAgentGraph() {
 export async function invokeTravelAgent(
     userMessage: string,
     sessionId: string,
-    existingMessages: BaseMessage[] = []
+    existingMessages: BaseMessage[] = [],
+    existingState?: Record<string, unknown>
 ): Promise<{
     response: string;
     state: TravelState;
 }> {
     const graph = createTravelAgentGraph();
+
+    // Restore travel details from existing state if available
+    const existingTravelDetails = (existingState?.travelDetails as TravelAgentState['travelDetails']) || {};
 
     const initialState: Partial<TravelState> = {
         messages: [...existingMessages, new HumanMessage(userMessage)],
@@ -326,6 +432,8 @@ export async function invokeTravelAgent(
         reasoningSteps: [],
         needsClarification: false,
         isComplete: false,
+        // Preserve existing travel details from previous conversation turns
+        travelDetails: existingTravelDetails,
     };
 
     const result = await graph.invoke(initialState);

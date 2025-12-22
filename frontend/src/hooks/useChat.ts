@@ -163,8 +163,16 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
     }, [isLoading, sessionId, currentAgent, messages.length, options]);
 
     const setAgent = useCallback((agent: AgentType) => {
+        // Clear chat when switching to a different agent
+        if (agent !== currentAgent) {
+            setMessages([]);
+            setSessionId(null);
+            setReasoningSteps([]);
+            setToolExecutions([]);
+            setError(null);
+        }
         setCurrentAgent(agent);
-    }, []);
+    }, [currentAgent]);
 
     const clearMessages = useCallback(() => {
         setMessages([]);

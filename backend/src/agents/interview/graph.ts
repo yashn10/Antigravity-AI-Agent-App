@@ -427,13 +427,16 @@ export async function invokeInterviewAgent(
     userMessage: string,
     sessionId: string,
     existingMessages: BaseMessage[] = [],
-    existingConfig?: InterviewAgentState['interviewConfig'],
-    existingQuestionCount?: number
+    agentState?: Record<string, unknown>
 ): Promise<{
     response: string;
     state: InterviewState;
 }> {
     const graph = createInterviewAgentGraph();
+
+    // Extract interview-specific state
+    const existingConfig = agentState?.interviewConfig as InterviewAgentState['interviewConfig'];
+    const existingQuestionCount = (agentState?.questionCount as number) || 0;
 
     const initialState: Partial<InterviewState> = {
         messages: [...existingMessages, new HumanMessage(userMessage)],

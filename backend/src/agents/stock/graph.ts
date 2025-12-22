@@ -1,8 +1,7 @@
 import { StateGraph, END, START, Annotation } from '@langchain/langgraph';
 import { BaseMessage, HumanMessage, AIMessage, SystemMessage } from '@langchain/core/messages';
-import { ToolNode } from '@langchain/langgraph/prebuilt';
 import { groqLLM } from '../../llm/groq.js';
-import { stockTools } from '../../tools/index.js';
+import { searchTavily } from '../../tools/tavily.js';
 import { StockAgentState, ReasoningStep, ToolExecution } from '../types.js';
 
 // Define the state annotation for LangGraph
@@ -51,6 +50,10 @@ const StockStateAnnotation = Annotation.Root({
         reducer: (curr, update) => ({ ...curr, ...update }),
         default: () => ({}),
     }),
+    searchResults: Annotation<string | undefined>({
+        reducer: (_, update) => update,
+        default: () => undefined,
+    }),
     disclaimer: Annotation<string | undefined>({
         reducer: (_, update) => update,
         default: () => undefined,
@@ -59,68 +62,28 @@ const StockStateAnnotation = Annotation.Root({
 
 type StockState = typeof StockStateAnnotation.State;
 
-const STOCK_SYSTEM_PROMPT = `You are a Market Intelligence Analyst. Your role is to provide market analysis, stock summaries, and financial insights based on current data.
+const STOCK_SYSTEM_PROMPT = `You are a Market Intelligence Analyst. Analyze the provided market data and give insightful analysis.
 
 ⚠️ IMPORTANT DISCLAIMER ⚠️
-You are NOT a licensed financial advisor. You do NOT provide:
-- Investment recommendations or "buy/sell" signals
-- Personal financial advice
-- Guaranteed predictions or forecasts
-- Specific portfolio allocation advice
+You are NOT a licensed financial advisor. All information is for educational purposes only.
 
-All information is for educational and informational purposes only.
-
-WHAT YOU CAN PROVIDE:
-✅ Market trend analysis and observations
-✅ Stock and sector summaries
-✅ Bull and bear case reasoning
-✅ Risk factor identification
-✅ Historical context and comparisons
-✅ Industry news and developments
-✅ General market education
-
-WORKFLOW:
-1. UNDERSTAND: Identify what the user wants to know:
-   - Specific stocks or symbols
-   - Sectors or industries
-   - Market trends or conditions
-   - Comparison analysis
-
-2. RESEARCH: Use search tools to gather:
-   - Current market data and news
-   - Recent developments
-   - Analyst opinions (with attribution)
-   - Relevant financial metrics
-
-3. ANALYZE: Present balanced analysis with:
-   - Current situation summary
-   - Bull case (positive factors)
-   - Bear case (risk factors)
-   - Key metrics and data points
-   - Source citations
-
-RESPONSE FORMAT:
-Structure responses with:
+Based on the search results provided, structure your response with:
 📊 **Market Overview** - Current conditions
 📈 **Bull Case** - Positive factors and opportunities
 📉 **Bear Case** - Risks and concerns
 ⚠️ **Key Risks** - Important considerations
-📰 **Recent News** - Relevant developments
 💡 **Key Takeaways** - Summary points
 
-Always include the investment disclaimer at the end.`;
+Be concise but informative. Cite sources when available.`;
 
 const INVESTMENT_DISCLAIMER = `
 
 ---
 ⚠️ **Investment Disclaimer**
-This analysis is for informational and educational purposes only. It is not financial advice, an investment recommendation, or a solicitation to buy or sell any securities. Past performance does not guarantee future results. All investments involve risk, including possible loss of principal. Please consult with a qualified financial advisor before making any investment decisions.
+This analysis is for informational and educational purposes only. It is not financial advice or a recommendation. Past performance does not guarantee future results. Please consult a qualified financial advisor before making investment decisions.
 ---`;
 
-// Bind tools to the LLM
-const llmWithTools = groqLLM.bindTools(stockTools);
-
-// Node: Analyze user request
+// Node: Analyze user request and extract stock symbols/sectors
 async function analyzeRequest(state: StockState): Promise<Partial<StockState>> {
     const messages = state.messages;
     const lastMessage = messages[messages.length - 1];
@@ -137,8 +100,8 @@ async function analyzeRequest(state: StockState): Promise<Partial<StockState>> {
     const potentialSymbols = userMessage.match(symbolRegex) || [];
 
     // Filter common words that might be mistaken for symbols
-    const commonWords = ['I', 'A', 'AND', 'OR', 'THE', 'FOR', 'TO', 'IN', 'IS', 'IT', 'OF', 'ON', 'AT', 'BY', 'AN', 'BE', 'AS', 'DO', 'IF', 'MY', 'SO', 'UP', 'AI', 'US'];
-    const symbols = potentialSymbols.filter(s => !commonWords.includes(s) && s.length >= 2);
+    const commonWords = ['I', 'A', 'AND', 'OR', 'THE', 'FOR', 'TO', 'IN', 'IS', 'IT', 'OF', 'ON', 'AT', 'BY', 'AN', 'BE', 'AS', 'DO', 'IF', 'MY', 'SO', 'UP', 'AI', 'US', 'HOW', 'WHAT', 'TELL', 'ME', 'ABOUT', 'TODAY', 'NOW', 'DOING', 'STOCK', 'MARKET'];
+    const symbols = potentialSymbols.filter(s => !commonWords.includes(s) && s.length >= 2 && s.length <= 5);
 
     if (symbols.length > 0) {
         query.symbols = symbols;
@@ -167,58 +130,86 @@ async function analyzeRequest(state: StockState): Promise<Partial<StockState>> {
         reasoningSteps: [{
             step: 1,
             title: 'Analyzing Query',
-            description: 'Identifying stocks and market focus',
+            description: `Identified: ${query.symbols?.join(', ') || query.sector || 'general market'}`,
             status: 'completed' as const,
         }],
     };
 }
 
-// Node: Call the LLM with tools
-async function callAgent(state: StockState): Promise<Partial<StockState>> {
-    const systemMessage = new SystemMessage(STOCK_SYSTEM_PROMPT);
-    const messages = [systemMessage, ...state.messages];
+// Node: Fetch market data directly using Tavily
+async function fetchMarketData(state: StockState): Promise<Partial<StockState>> {
+    const lastMessage = state.messages[state.messages.length - 1];
+    const userMessage = String(lastMessage?.content || '');
+    const query = state.stockQuery || {};
+
+    // Build search query
+    let searchQuery = userMessage;
+    if (query.symbols && query.symbols.length > 0) {
+        searchQuery = `${query.symbols.join(' ')} stock market analysis price news`;
+    } else if (query.sector) {
+        searchQuery = `${query.sector} sector stock market analysis news`;
+    } else {
+        searchQuery = `${userMessage} stock market analysis`;
+    }
 
     try {
-        const response = await llmWithTools.invoke(messages);
+        console.log('Stock search query:', searchQuery);
+
+        const result = await searchTavily(searchQuery, {
+            searchDepth: 'basic',
+            maxResults: 5,
+            includeAnswer: true,
+            includeDomains: ['finance.yahoo.com', 'marketwatch.com', 'bloomberg.com', 'cnbc.com', 'reuters.com'],
+        });
+
+        // Format results for the LLM
+        const formattedResults = result.results
+            .map((r, i) => `[${i + 1}] ${r.title}\nSource: ${r.url}\n${r.content}`)
+            .join('\n\n');
+
+        const searchOutput = result.answer
+            ? `**Market Insight:** ${result.answer}\n\n**Sources:**\n${formattedResults}`
+            : formattedResults || 'No specific data found. Providing general analysis.';
 
         return {
-            messages: [response],
+            searchResults: searchOutput,
             reasoningSteps: [{
-                step: state.reasoningSteps.length + 1,
-                title: 'Researching',
-                description: 'Gathering market data and analysis',
-                status: 'in_progress' as const,
+                step: 2,
+                title: 'Data Fetched',
+                description: `Found ${result.results.length} market sources`,
+                status: 'completed' as const,
             }],
         };
     } catch (error) {
+        console.error('Stock search error:', error);
         return {
-            error: `Error processing request: ${error instanceof Error ? error.message : 'Unknown error'}`,
-            isComplete: true,
+            searchResults: 'Unable to fetch real-time data. Providing general analysis based on available information.',
+            reasoningSteps: [{
+                step: 2,
+                title: 'Search',
+                description: 'Using cached knowledge',
+                status: 'completed' as const,
+            }],
         };
     }
 }
 
-// Tool node
-const toolNode = new ToolNode(stockTools);
-
-// Node: Generate final analysis
+// Node: Generate analysis using LLM with the fetched data
 async function generateAnalysis(state: StockState): Promise<Partial<StockState>> {
-    const systemMessage = new SystemMessage(STOCK_SYSTEM_PROMPT + `
+    const searchResults = state.searchResults || 'No specific market data available.';
+    const lastMessage = state.messages[state.messages.length - 1];
+    const userQuery = String(lastMessage?.content || 'market analysis');
 
-IMPORTANT: You now have market data. Generate a comprehensive analysis with:
+    const systemMessage = new SystemMessage(STOCK_SYSTEM_PROMPT);
+    const dataMessage = new HumanMessage(`User Query: ${userQuery}
 
-1. 📊 **Market Overview** - Current conditions and context
-2. 📈 **Bull Case** - Positive factors supporting growth
-3. 📉 **Bear Case** - Risks and concerns to consider
-4. ⚠️ **Key Risks** - Important risk factors
-5. 💡 **Key Takeaways** - Summary and main points
+Market Data and News:
+${searchResults}
 
-Be balanced and objective. Cite sources when available. Remember to include the investment disclaimer.`);
-
-    const messages = [systemMessage, ...state.messages];
+Based on this data, provide a comprehensive market analysis. Be specific and cite the sources provided.`);
 
     try {
-        const response = await groqLLM.invoke(messages);
+        const response = await groqLLM.invoke([systemMessage, dataMessage]);
 
         // Append disclaimer
         const responseContent = String(response.content) + INVESTMENT_DISCLAIMER;
@@ -228,7 +219,7 @@ Be balanced and objective. Cite sources when available. Remember to include the 
             isComplete: true,
             disclaimer: INVESTMENT_DISCLAIMER,
             reasoningSteps: [{
-                step: state.reasoningSteps.length + 1,
+                step: 3,
                 title: 'Analysis Complete',
                 description: 'Market analysis ready',
                 status: 'completed' as const,
@@ -242,31 +233,15 @@ Be balanced and objective. Cite sources when available. Remember to include the 
     }
 }
 
-// Routing function
-function shouldUseTool(state: StockState): string {
-    const lastMessage = state.messages[state.messages.length - 1];
-
-    if (lastMessage && 'tool_calls' in lastMessage && Array.isArray(lastMessage.tool_calls) && lastMessage.tool_calls.length > 0) {
-        return 'tools';
-    }
-
-    return 'respond';
-}
-
-// Create the stock agent graph
+// Create the stock agent graph - simplified workflow
 export function createStockAgentGraph() {
     const workflow = new StateGraph(StockStateAnnotation)
         .addNode('analyze', analyzeRequest)
-        .addNode('agent', callAgent)
-        .addNode('tools', toolNode)
+        .addNode('fetch', fetchMarketData)
         .addNode('respond', generateAnalysis)
         .addEdge(START, 'analyze')
-        .addEdge('analyze', 'agent')
-        .addConditionalEdges('agent', shouldUseTool, {
-            tools: 'tools',
-            respond: 'respond',
-        })
-        .addEdge('tools', 'agent')
+        .addEdge('analyze', 'fetch')
+        .addEdge('fetch', 'respond')
         .addEdge('respond', END);
 
     return workflow.compile();
@@ -276,7 +251,8 @@ export function createStockAgentGraph() {
 export async function invokeStockAgent(
     userMessage: string,
     sessionId: string,
-    existingMessages: BaseMessage[] = []
+    existingMessages: BaseMessage[] = [],
+    _agentState?: Record<string, unknown>
 ): Promise<{
     response: string;
     state: StockState;
