@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import Link from 'next/link';
 import { Moon, Sun, Plus, Menu, X, Github } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { Button } from '@/components/ui/button';
@@ -51,12 +52,12 @@ export default function Header({ onNewChat, onToggleSidebar, isSidebarOpen }: He
                     </Tooltip>
 
                     {/* Logo */}
-                    <div className="flex items-center gap-2">
+                    <Link href="/" className="flex items-center gap-2 hover:opacity-80 transition-opacity">
                         <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-purple-600 flex items-center justify-center text-white font-bold">
                             A
                         </div>
                         <span className="font-semibold text-lg hidden sm:block">Agent Platform</span>
-                    </div>
+                    </Link>
                 </div>
 
                 <div className="flex items-center gap-2">
