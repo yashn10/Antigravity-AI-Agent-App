@@ -1,6 +1,6 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
-import { env } from './config/env.js';
+import { env } from './config/env';
 
 // Import routes
 import chatRoutes from './routes/chat.js';
@@ -11,7 +11,7 @@ const app = express();
 
 // Middleware
 app.use(cors({
-    origin: ['http://localhost:3000', 'http://127.0.0.1:3000'],
+    origin: ['http://localhost:3000', 'http://127.0.0.1:3000', 'https://antigravity-ai-agent-app.vercel.app'],
     credentials: true,
 }));
 app.use(express.json());
