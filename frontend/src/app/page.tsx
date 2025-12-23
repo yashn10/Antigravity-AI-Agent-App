@@ -16,7 +16,6 @@ import {
     Shield,
     Zap
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
 
 export default function LandingPage() {
     return (
@@ -50,7 +49,7 @@ export default function LandingPage() {
 
             <main className="flex-1">
                 {/* Hero Section */}
-                <section className="relative pt-32 pb-20 md:pt-48 md:pb-32 overflow-hidden">
+                <section className="relative pt-32 pb-20 md:pt-36 md:pb-36 overflow-hidden">
                     {/* Background Elements */}
                     <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[1000px] h-[600px] bg-indigo-500/20 blur-[120px] rounded-full -z-10" />
                     <div className="absolute inset-0 bg-grid-white/[0.02] bg-[size:50px_50px] -z-10" />
