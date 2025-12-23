@@ -26,7 +26,8 @@ import { BaseMessage } from '@langchain/core/messages';
 type AgentInvoker = (
     message: string,
     sessionId: string,
-    existingMessages?: BaseMessage[]
+    existingMessages?: BaseMessage[],
+    agentState?: Record<string, unknown>
 ) => Promise<{ response: string; state: unknown }>;
 
 // Registry of all agents
@@ -54,11 +55,13 @@ export async function invokeAgent(
     agentType: AgentType,
     message: string,
     sessionId: string,
-    existingMessages: BaseMessage[] = []
+    existingMessages: BaseMessage[] = [],
+    agentState?: Record<string, unknown>
 ): Promise<{ response: string; state: unknown }> {
     const invoker = agentRegistry[agentType];
     if (!invoker) {
         throw new Error(`Unknown agent type: ${agentType}`);
     }
-    return invoker(message, sessionId, existingMessages);
+    return invoker(message, sessionId, existingMessages, agentState);
 }
+

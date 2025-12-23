@@ -1,7 +1,7 @@
 import { StateGraph, END, START, Annotation } from '@langchain/langgraph';
 import { BaseMessage, HumanMessage, AIMessage, SystemMessage } from '@langchain/core/messages';
 import { groqLLMFast } from '../../llm/groq.js';
-import { MetaAgentState, AgentType, ReasoningStep, ToolExecution, AGENT_INFO } from '../types.js';
+import { MetaAgentState, AgentType, MetaRoutingIntent, ReasoningStep, ToolExecution, AGENT_INFO } from '../types.js';
 
 // Import agent invokers
 import { invokeTravelAgent } from '../travel/graph.js';
@@ -149,7 +149,7 @@ async function analyzeAndRoute(state: MetaState): Promise<Partial<MetaState>> {
 
         return {
             detectedIntent: {
-                primaryAgent: routingDecision.agent as AgentType,
+                primaryAgent: routingDecision.agent as MetaRoutingIntent,
                 confidence: routingDecision.confidence,
                 reasoning: routingDecision.reasoning,
             },
@@ -335,7 +335,8 @@ export function createMetaAgentGraph() {
 export async function invokeMetaAgent(
     userMessage: string,
     sessionId: string,
-    existingMessages: BaseMessage[] = []
+    existingMessages: BaseMessage[] = [],
+    _agentState?: Record<string, unknown>  // Accept for interface consistency
 ): Promise<{
     response: string;
     state: MetaState;

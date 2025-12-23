@@ -1,8 +1,7 @@
 import { StateGraph, END, START, Annotation } from '@langchain/langgraph';
 import { BaseMessage, HumanMessage, AIMessage, SystemMessage } from '@langchain/core/messages';
-import { ToolNode } from '@langchain/langgraph/prebuilt';
 import { groqLLM } from '../../llm/groq.js';
-import { newsTools } from '../../tools/index.js';
+import { fetchTopHeadlines, searchNews, formatArticles, NewsCategory } from '../../tools/newsapi.js';
 import { NewsAgentState, ReasoningStep, ToolExecution } from '../types.js';
 
 // Define the state annotation for LangGraph
@@ -51,6 +50,10 @@ const NewsStateAnnotation = Annotation.Root({
         reducer: (_, update) => update,
         default: () => [],
     }),
+    newsData: Annotation<string | undefined>({
+        reducer: (_, update) => update,
+        default: () => undefined,
+    }),
     summary: Annotation<string | undefined>({
         reducer: (_, update) => update,
         default: () => undefined,
@@ -63,54 +66,17 @@ const NewsStateAnnotation = Annotation.Root({
 
 type NewsState = typeof NewsStateAnnotation.State;
 
-const NEWS_SYSTEM_PROMPT = `You are an expert News Analyst Agent, similar to Perplexity AI. Your role is to fetch, analyze, and synthesize the latest news for users.
+const NEWS_SYSTEM_PROMPT = `You are an expert News Analyst, similar to Perplexity AI. Analyze the provided news data and create an insightful summary.
 
-CAPABILITIES:
-- Fetch top headlines by category (general, business, technology, science, health, sports, entertainment)
-- Search for specific news topics
-- Perform deep web searches for additional context
-- Provide comprehensive summaries with source citations
-- Generate follow-up insights and related topics
+Based on the news articles provided, structure your response with:
+📰 **Top Headlines** - Key stories with brief descriptions
+📊 **Analysis** - Context and implications of major stories
+🔗 **Sources** - Reference the source names provided
+💡 **Follow-up Insights** - Related topics to explore
 
-WORKFLOW:
-1. UNDERSTAND: Determine what news the user wants:
-   - Specific category (tech, business, sports, etc.)
-   - Specific topic or keywords
-   - Time range (today, this week, etc.)
+Be concise, informative, and cite sources when discussing specific stories.`;
 
-2. GATHER: Use available tools to fetch:
-   - Top headlines for requested category
-   - Search results for specific topics
-   - Additional context via web search
-
-3. SYNTHESIZE: Create a comprehensive response with:
-   - **Headlines**: Key stories with brief descriptions
-   - **Deep Summary**: Analysis and context for major stories
-   - **Source Citations**: Links and references
-   - **Follow-up Insights**: Related topics to explore
-
-FORMATTING GUIDELINES:
-- Use clear headers and bullet points
-- Include source names and dates
-- Provide balanced coverage
-- Highlight breaking or significant news
-- Suggest related topics for further reading
-
-NEWS CATEGORIES:
-- general: Top stories across all topics
-- technology: Tech news, AI, startups, gadgets
-- business: Markets, economy, corporate news
-- science: Research, discoveries, space
-- health: Medical news, wellness, healthcare
-- sports: Games, athletes, leagues
-- entertainment: Movies, music, celebrities
-
-Always cite your sources and provide balanced, factual information.`;
-
-// Bind tools to the LLM
-const llmWithTools = groqLLM.bindTools(newsTools);
-
-// Node: Analyze user request
+// Node: Analyze user request and detect category/topic
 async function analyzeRequest(state: NewsState): Promise<Partial<NewsState>> {
     const messages = state.messages;
     const lastMessage = messages[messages.length - 1];
@@ -123,17 +89,44 @@ async function analyzeRequest(state: NewsState): Promise<Partial<NewsState>> {
     const preferences: NewsAgentState['newsPreferences'] = { ...state.newsPreferences };
 
     // Detect category from message
-    const categoryMap: Record<string, string[]> = {
-        technology: ['tech', 'technology', 'ai', 'artificial intelligence', 'software', 'startup', 'gadget'],
-        business: ['business', 'market', 'stock', 'economy', 'finance', 'corporate'],
-        science: ['science', 'research', 'discovery', 'space', 'physics', 'biology'],
-        health: ['health', 'medical', 'healthcare', 'wellness', 'medicine'],
-        sports: ['sports', 'game', 'football', 'basketball', 'soccer', 'cricket', 'tennis'],
-        entertainment: ['entertainment', 'movie', 'music', 'celebrity', 'film', 'tv'],
+    const categoryMap: Record<string, NewsCategory> = {
+        'tech': 'technology',
+        'technology': 'technology',
+        'ai': 'technology',
+        'artificial intelligence': 'technology',
+        'software': 'technology',
+        'startup': 'technology',
+        'gadget': 'technology',
+        'business': 'business',
+        'market': 'business',
+        'stock': 'business',
+        'economy': 'business',
+        'finance': 'business',
+        'corporate': 'business',
+        'science': 'science',
+        'research': 'science',
+        'discovery': 'science',
+        'space': 'science',
+        'health': 'health',
+        'medical': 'health',
+        'healthcare': 'health',
+        'wellness': 'health',
+        'sports': 'sports',
+        'game': 'sports',
+        'football': 'sports',
+        'basketball': 'sports',
+        'soccer': 'sports',
+        'cricket': 'sports',
+        'entertainment': 'entertainment',
+        'movie': 'entertainment',
+        'music': 'entertainment',
+        'celebrity': 'entertainment',
     };
 
-    for (const [category, keywords] of Object.entries(categoryMap)) {
-        if (keywords.some(kw => userMessage.includes(kw))) {
+    let detectedCategory: NewsCategory = 'general';
+    for (const [keyword, category] of Object.entries(categoryMap)) {
+        if (userMessage.includes(keyword)) {
+            detectedCategory = category;
             preferences.categories = [category];
             break;
         }
@@ -148,68 +141,105 @@ async function analyzeRequest(state: NewsState): Promise<Partial<NewsState>> {
         preferences.timeRange = 'month';
     }
 
+    // Extract keywords for search
+    const keywords = userMessage
+        .replace(/what('s| is| are)?|the|latest|news|in|about|on|today|this|week/gi, '')
+        .trim();
+    if (keywords.length > 2) {
+        preferences.keywords = [keywords];
+    }
+
     return {
-        newsPreferences: preferences,
+        newsPreferences: { ...preferences, categories: [detectedCategory] },
         reasoningSteps: [{
             step: 1,
             title: 'Analyzing Request',
-            description: 'Understanding your news preferences',
+            description: `Category: ${detectedCategory}${preferences.keywords ? `, Topic: ${preferences.keywords[0]}` : ''}`,
             status: 'completed' as const,
         }],
     };
 }
 
-// Node: Call the LLM with tools
-async function callAgent(state: NewsState): Promise<Partial<NewsState>> {
-    const systemMessage = new SystemMessage(NEWS_SYSTEM_PROMPT);
-    const messages = [systemMessage, ...state.messages];
+// Node: Fetch news data directly
+async function fetchNewsData(state: NewsState): Promise<Partial<NewsState>> {
+    const preferences = state.newsPreferences || {};
+    const category = (preferences.categories?.[0] as NewsCategory) || 'general';
+    const keywords = preferences.keywords?.[0];
 
     try {
-        const response = await llmWithTools.invoke(messages);
+        let newsData: string;
+        let articleCount = 0;
+
+        if (keywords && keywords.length > 3) {
+            // Search for specific topic
+            console.log('Searching news for:', keywords);
+            const result = await searchNews({
+                query: keywords,
+                sortBy: 'publishedAt',
+                pageSize: 8,
+            });
+            newsData = formatArticles(result.articles);
+            articleCount = result.articles.length;
+        } else {
+            // Fetch top headlines by category
+            console.log('Fetching headlines for category:', category);
+            const result = await fetchTopHeadlines({
+                category,
+                pageSize: 8,
+            });
+            newsData = formatArticles(result.articles);
+            articleCount = result.articles.length;
+        }
 
         return {
-            messages: [response],
+            newsData: newsData || 'No news articles found.',
             reasoningSteps: [{
-                step: state.reasoningSteps.length + 1,
-                title: 'Fetching News',
-                description: 'Gathering latest headlines and articles',
-                status: 'in_progress' as const,
+                step: 2,
+                title: 'News Fetched',
+                description: `Found ${articleCount} articles`,
+                status: 'completed' as const,
             }],
         };
     } catch (error) {
+        console.error('News fetch error:', error);
         return {
-            error: `Error processing request: ${error instanceof Error ? error.message : 'Unknown error'}`,
-            isComplete: true,
+            newsData: 'Unable to fetch news. Please try again later.',
+            reasoningSteps: [{
+                step: 2,
+                title: 'Fetch Issue',
+                description: 'Using cached knowledge',
+                status: 'completed' as const,
+            }],
         };
     }
 }
 
-// Tool node
-const toolNode = new ToolNode(newsTools);
+// Node: Generate news summary using LLM
+async function generateSummary(state: NewsState): Promise<Partial<NewsState>> {
+    const newsData = state.newsData || 'No news data available.';
+    const preferences = state.newsPreferences || {};
+    const category = preferences.categories?.[0] || 'general';
+    const lastMessage = state.messages[state.messages.length - 1];
+    const userQuery = String(lastMessage?.content || 'latest news');
 
-// Node: Generate final response with analysis
-async function generateResponse(state: NewsState): Promise<Partial<NewsState>> {
-    const systemMessage = new SystemMessage(NEWS_SYSTEM_PROMPT + `
+    const systemMessage = new SystemMessage(NEWS_SYSTEM_PROMPT);
+    const dataMessage = new HumanMessage(`User Query: ${userQuery}
 
-IMPORTANT: You now have news data. Generate a Perplexity-style comprehensive response with:
+News Category: ${category}
 
-1. **📰 Top Headlines** - Key stories with brief descriptions
-2. **📊 Deep Analysis** - Context and implications of major stories  
-3. **🔗 Sources** - Links to original articles
-4. **💡 Follow-up Insights** - Related topics and what to watch
+News Articles:
+${newsData}
 
-Use clear formatting with emojis for visual organization. Be informative and engaging.`);
-
-    const messages = [systemMessage, ...state.messages];
+Based on these articles, provide a comprehensive news summary. Highlight the most important stories and provide analysis.`);
 
     try {
-        const response = await groqLLM.invoke(messages);
+        const response = await groqLLM.invoke([systemMessage, dataMessage]);
 
         return {
             messages: [response],
             isComplete: true,
             reasoningSteps: [{
-                step: state.reasoningSteps.length + 1,
+                step: 3,
                 title: 'Analysis Complete',
                 description: 'News summary ready',
                 status: 'completed' as const,
@@ -217,37 +247,21 @@ Use clear formatting with emojis for visual organization. Be informative and eng
         };
     } catch (error) {
         return {
-            error: `Error generating response: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            error: `Error generating summary: ${error instanceof Error ? error.message : 'Unknown error'}`,
             isComplete: true,
         };
     }
 }
 
-// Routing function
-function shouldUseTool(state: NewsState): string {
-    const lastMessage = state.messages[state.messages.length - 1];
-
-    if (lastMessage && 'tool_calls' in lastMessage && Array.isArray(lastMessage.tool_calls) && lastMessage.tool_calls.length > 0) {
-        return 'tools';
-    }
-
-    return 'respond';
-}
-
-// Create the news agent graph
+// Create the news agent graph - simplified workflow
 export function createNewsAgentGraph() {
     const workflow = new StateGraph(NewsStateAnnotation)
         .addNode('analyze', analyzeRequest)
-        .addNode('agent', callAgent)
-        .addNode('tools', toolNode)
-        .addNode('respond', generateResponse)
+        .addNode('fetch', fetchNewsData)
+        .addNode('respond', generateSummary)
         .addEdge(START, 'analyze')
-        .addEdge('analyze', 'agent')
-        .addConditionalEdges('agent', shouldUseTool, {
-            tools: 'tools',
-            respond: 'respond',
-        })
-        .addEdge('tools', 'agent')
+        .addEdge('analyze', 'fetch')
+        .addEdge('fetch', 'respond')
         .addEdge('respond', END);
 
     return workflow.compile();
@@ -257,7 +271,8 @@ export function createNewsAgentGraph() {
 export async function invokeNewsAgent(
     userMessage: string,
     sessionId: string,
-    existingMessages: BaseMessage[] = []
+    existingMessages: BaseMessage[] = [],
+    _agentState?: Record<string, unknown>
 ): Promise<{
     response: string;
     state: NewsState;

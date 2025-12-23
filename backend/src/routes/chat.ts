@@ -15,6 +15,7 @@ const router = Router();
 const sessions = new Map<string, {
     messages: BaseMessage[];
     currentAgent: AgentType;
+    agentState: Record<string, unknown>;  // Agent-specific state (travelDetails, stockQuery, etc.)
     createdAt: Date;
     updatedAt: Date;
 }>();
@@ -49,27 +50,36 @@ router.post('/', async (req: Request, res: Response) => {
             session = {
                 messages: [],
                 currentAgent: (agentType as AgentType) || 'meta',
+                agentState: {},
                 createdAt: new Date(),
                 updatedAt: new Date(),
             };
             sessions.set(currentSessionId, session);
         }
 
+        // Clear session if agent changed (start fresh conversation per agent)
+        if (agentType && session.currentAgent !== agentType) {
+            session.messages = [];
+            session.agentState = {};
+        }
+
         // Determine which agent to use
         const targetAgent: AgentType = (agentType as AgentType) || session.currentAgent || 'meta';
 
-        // Invoke the agent
+        // Invoke the agent with existing state
         const result = await invokeAgent(
             targetAgent,
             message,
             currentSessionId,
-            session.messages
+            session.messages,
+            session.agentState
         );
 
-        // Update session
+        // Update session with new messages and agent state
         session.messages.push(new HumanMessage(message));
         session.messages.push(new AIMessage(result.response));
         session.currentAgent = targetAgent;
+        session.agentState = result.state as Record<string, unknown>;  // Persist agent state
         session.updatedAt = new Date();
 
         // Prepare response
@@ -124,10 +134,17 @@ router.post('/stream', async (req: Request, res: Response) => {
             session = {
                 messages: [],
                 currentAgent: (agentType as AgentType) || 'meta',
+                agentState: {},
                 createdAt: new Date(),
                 updatedAt: new Date(),
             };
             sessions.set(currentSessionId, session);
+        }
+
+        // Clear session if agent changed (start fresh conversation per agent)
+        if (agentType && session.currentAgent !== agentType) {
+            session.messages = [];
+            session.agentState = {};
         }
 
         const targetAgent: AgentType = (agentType as AgentType) || session.currentAgent || 'meta';
@@ -139,12 +156,13 @@ router.post('/stream', async (req: Request, res: Response) => {
             agentType: targetAgent,
         })}\n\n`);
 
-        // Invoke agent
+        // Invoke agent with existing state
         const result = await invokeAgent(
             targetAgent,
             message,
             currentSessionId,
-            session.messages
+            session.messages,
+            session.agentState
         );
 
         // Send reasoning steps
@@ -179,10 +197,11 @@ router.post('/stream', async (req: Request, res: Response) => {
             await new Promise(resolve => setTimeout(resolve, 20));
         }
 
-        // Update session
+        // Update session with new messages and agent state
         session.messages.push(new HumanMessage(message));
         session.messages.push(new AIMessage(result.response));
         session.currentAgent = targetAgent;
+        session.agentState = result.state as Record<string, unknown>;
         session.updatedAt = new Date();
 
         // Send completion event

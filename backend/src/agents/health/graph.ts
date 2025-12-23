@@ -271,7 +271,8 @@ export function createHealthAgentGraph() {
 export async function invokeHealthAgent(
     userMessage: string,
     sessionId: string,
-    existingMessages: BaseMessage[] = []
+    existingMessages: BaseMessage[] = [],
+    _agentState?: Record<string, unknown>  // Accept for interface consistency
 ): Promise<{
     response: string;
     state: HealthState;

@@ -150,15 +150,19 @@ export interface InterviewAgentState extends BaseAgentState {
     finalFeedback?: string;
 }
 
+// Meta agent routing intent types (includes special routing states)
+export type MetaRoutingIntent = AgentType | 'greet' | 'clarify';
+
 // Meta orchestrator state
 export interface MetaAgentState extends BaseAgentState {
     currentAgent: 'meta';
     detectedIntent?: {
-        primaryAgent: AgentType;
+        primaryAgent: MetaRoutingIntent;
         confidence: number;
         reasoning: string;
     };
     routedTo?: AgentType;
+    agentResponse?: string;
 }
 
 // Union type for all agent states
