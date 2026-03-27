@@ -1,6 +1,7 @@
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { env } from '../config/env.js';
+// @ts-ignore
 import Amadeus from 'amadeus';
 
 // Initialize Amadeus client
