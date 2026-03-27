@@ -58,11 +58,11 @@ async function fetchTopHeadlines(
     const response = await fetch(`${NEWS_API_URL}/top-headlines?${params}`);
 
     if (!response.ok) {
-        const error = await response.json();
+        const error = await response.json() as { message?: string };
         throw new Error(`NewsAPI error: ${error.message || response.statusText}`);
     }
 
-    return response.json();
+    return response.json() as Promise<NewsAPIResponse>;
 }
 
 // Search all news articles
@@ -91,11 +91,11 @@ async function searchNews(
     const response = await fetch(`${NEWS_API_URL}/everything?${params}`);
 
     if (!response.ok) {
-        const error = await response.json();
+        const error = await response.json() as { message?: string };
         throw new Error(`NewsAPI error: ${error.message || response.statusText}`);
     }
 
-    return response.json();
+    return response.json() as Promise<NewsAPIResponse>;
 }
 
 // Format articles for agent consumption

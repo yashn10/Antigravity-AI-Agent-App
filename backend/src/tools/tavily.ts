@@ -56,7 +56,7 @@ async function searchTavily(
         throw new Error(`Tavily API error: ${response.status} ${response.statusText}`);
     }
 
-    return response.json();
+    return response.json() as Promise<TavilyResponse>;
 }
 
 // LangChain tool for web search
